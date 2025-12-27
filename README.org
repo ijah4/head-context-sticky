@@ -1,0 +1,197 @@
+* Head Context Sticky
+
+A sticky context header for Emacs buffers, similar to VS Code's sticky scroll feature.
+
+* Description
+
+This package displays contextually relevant information (function definitions, class definitions, etc.) in a floating frame at the top of windows. It helps you keep track of your position in the code without losing the broader context.
+
+* Features
+
+- **Multiple Language Support**: Works with any language supported by tree-sitter
+- **Customizable Node Types**: Configure which tree-sitter node types to display
+- **Performance Optimized**: Uses idle timers and fingerprinting to avoid jank
+- **Anti-Flicker**: Only updates when content actually changes
+- **Line Numbers**: Optional line number display in the sticky header
+- **Interactive**: Click to jump to context lines, scroll wheel to navigate parent window
+
+* Requirements
+
+- Emacs 29.4 or later (for tree-sitter support)
+- Tree-sitter grammar for your programming language
+
+* Installation
+
+**Manual Installation**
+
+Download =head-context-sticky.el= and place it in your =load-path=:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/head-context-sticky")
+(require 'head-context-sticky)
+(global-head-context-sticky-mode +1)
+#+end_src
+
+**With package.el**
+
+Add to your =init.el=:
+
+#+begin_src emacs-lisp
+(use-package head-context-sticky
+  :load-path "path/to/head-context-sticky"
+  :hook (after-init . global-head-context-sticky-mode))
+#+end_src
+
+* Usage
+
+Once enabled, the sticky context header will automatically appear at the top of your windows showing the current context.
+
+**Key Bindings**
+
+- Click on a line in the sticky header to jump to that line
+- Scroll wheel over the sticky header to scroll the parent window
+
+**Commands**
+
+- =M-x head-context-sticky-mode= - Toggle sticky context for current buffer
+- =M-x global-head-context-sticky-mode= - Toggle sticky context globally
+- =M-x head-context-sticky-make-invisible= - Temporarily hide sticky headers
+- =M-x head-context-sticky-make-visible= - Show sticky headers again
+
+* Configuration
+
+**Maximum Lines to Display**
+
+#+begin_src emacs-lisp
+(setq head-context-sticky-max-lines 5)
+#+end_src
+
+**Show Line Numbers**
+
+#+begin_src emacs-lisp
+(setq head-context-sticky-show-line-numbers t)
+#+end_src
+
+**Exclude Specific Modes**
+
+#+begin_src emacs-lisp
+(add-to-list 'head-context-sticky-excluded-modes 'your-mode)
+#+end_src
+
+**Customize Node Types**
+
+For Python:
+
+#+begin_src emacs-lisp
+(add-to-list 'head-context-sticky-node-rules
+             '(python-mode . ("function_definition" "class_definition"
+                           "if_statement" "for_statement"
+                           "while_statement" "try_statement"
+                           "with_statement" "match_statement")))
+#+end_src
+
+**Appearance**
+
+The sticky header automatically adapts to your theme by slightly adjusting the background color of the default face.
+
+* How It Works
+
+The package uses three strategies to determine context:
+
+1. **Tree-sitter** (preferred): Uses tree-sitter to find parent nodes (functions, classes, etc.)
+2. **Indentation**: Falls back to indentation-based context detection
+3. **Outline**: Uses outline-mode for org-mode and similar modes
+
+**Performance Features**
+
+- **Idle Timer**: Updates are deferred until Emacs is idle (0.05s delay)
+- **Fingerprinting**: Content is compared before rendering to avoid unnecessary updates
+- **Window Registry**: Weak hash table automatically cleans up deleted windows
+- **Buffer Reuse**: Each window gets a dedicated buffer to avoid reallocation
+- **Tree-sitter Depth Limit**: Prevents freezing in very large files (max 20 levels)
+
+* Customization
+
+**Faces**
+
+- =head-context-sticky-number-face=: Face for line numbers (inherits from =line-number=)
+
+**Variables**
+
+- =head-context-sticky-max-lines=: Maximum number of context lines to display (default: 5)
+- =head-context-sticky-show-line-numbers=: Show line numbers in sticky header (default: t)
+- =head-context-sticky-excluded-modes=: List of modes to disable sticky scroll
+- =head-context-sticky-invisible=: Temporarily hide sticky headers (use with =ediff=, etc.)
+- =head-context-sticky-node-rules=: Alist mapping major modes to tree-sitter node types
+
+* Example Configuration
+
+#+begin_src emacs-lisp
+(use-package head-context-sticky
+  :load-path "path/to/head-context-sticky"
+  :config
+  (setq head-context-sticky-max-lines 3)
+  (setq head-context-sticky-show-line-numbers t)
+  (add-to-list 'head-context-sticky-excluded-modes 'magit-mode)
+  :hook (after-init . global-head-context-sticky-mode))
+#+end_src
+
+* Troubleshooting
+
+**Sticky header not appearing**
+
+- Check that tree-sitter is available: =(treesit-parser-list)=
+- Verify your language has a tree-sitter grammar installed
+- Try enabling =head-context-sticky-mode= manually in the buffer
+
+**Performance issues**
+
+- Reduce =head-context-sticky-max-lines=
+- Disable in very large files by adding to =head-context-sticky-excluded-modes=
+- The package already limits tree-sitter traversal to 20 levels
+
+**Flickering**
+
+- The package uses fingerprinting to minimize updates
+- Flickering may occur with very rapid scrolling
+- Consider increasing the idle timer delay (default: 0.05s)
+
+* Development
+
+**Testing**
+
+#+begin_src bash
+# Load the package for manual testing
+emacs -Q -l head-context-sticky.el
+
+# Check syntax
+emacs --batch --eval "(progn (load-file \"head-context-sticky.el\") (message \"Syntax check passed\"))"
+
+# Byte compile (shows warnings/errors)
+emacs --batch --eval "(byte-compile-file \"head-context-sticky.el\")"
+#+end_src
+
+* Contributing
+
+Contributions are welcome! Please:
+
+1. Follow the coding style in [[file:AGENTS.md][AGENTS.md]]
+2. Ensure byte-compilation succeeds without warnings
+3. Test with multiple programming languages
+4. Update this README.org for user-facing changes
+
+* License
+
+Same as GNU Emacs.
+
+* Acknowledgments
+
+Inspired by VS Code's sticky scroll feature and various Emacs packages that provide similar functionality.
+
+* Version History
+
+- 1.0 - Initial release
+  - Tree-sitter integration
+  - Multiple fallback strategies
+  - Performance optimizations
+  - Anti-flicker rendering

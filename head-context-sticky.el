@@ -12,6 +12,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'color)
+(require 'outline)
 
 (defgroup head-context-sticky nil
   "Context sticky header settings."
@@ -20,7 +21,7 @@
 ;; -----------------------------------------------------------------------------
 ;; 1. Configuration
 ;; -----------------------------------------------------------------------------
-(defcustom head-context-sticky-invisible nil "Make sticky frame invisible")
+(defcustom head-context-sticky-invisible nil "Make sticky frame invisible" :type 'boolean)
 
 (defcustom head-context-sticky-max-lines 5
   "Maximum number of lines to display."
@@ -46,19 +47,13 @@
     (json-ts-mode    . ("pair"))
     (toml-ts-mode    . ("table" "pair"))
 
-    ;; --- DEFAULT GENERIC RULE ---
-    (default . (;; Functions/Methods
-                "function_definition" "function_declaration" "function_item" "method_definition" "method_declaration" "arrow_function" 
-                ;; Classes/Structs
-                "class_definition" "class_declaration" "class_specifier" "struct_specifier" "interface_declaration" "impl_item" "trait_item"
-                ;; Modules/Namespaces
-                "namespace_definition" "module" "mod_item" "package_clause"
-                ;; Control Flow (Statement style)
-                "if_statement" "for_statement" "while_statement" "switch_statement" "do_statement" "try_statement" "case_statement"
-                ;; Control Flow (Expression style)
-                "if_expression" "for_expression" "while_expression" "match_expression" "loop_expression"
-                ;; Misc
-                "section" "headline" "tag" "element")))
+     ;; --- DEFAULT GENERIC RULE ---
+     (default . ("function_definition" "function_declaration" "function_item" "method_definition" "method_declaration" "arrow_function"
+                 "class_definition" "class_declaration" "class_specifier" "struct_specifier" "interface_declaration" "impl_item" "trait_item"
+                 "namespace_definition" "module" "mod_item" "package_clause"
+                 "if_statement" "for_statement" "while_statement" "switch_statement" "do_statement" "try_statement" "case_statement"
+                 "if_expression" "for_expression" "while_expression" "match_expression" "loop_expression"
+                 "section" "headline" "tag" "element")))
   "Tree-sitter node types to display."
   :type '(alist :key-type symbol :value-type (repeat string)))
 
@@ -70,6 +65,9 @@
 ;; -----------------------------------------------------------------------------
 
 (defun head-context-sticky--get-context-data (window)
+  "Get context data for sticky display in WINDOW."
+  (unless (window-live-p window)
+    (signal 'wrong-type-argument (list 'window-live-p window)))
   (with-selected-window window
     (save-restriction
       (widen)
@@ -84,22 +82,27 @@
                         (alist-get 'default head-context-sticky-node-rules)))
              res)
         (or 
-         ;; 1. Strategy: Tree-sitter
-         (when (and rules (featurep 'treesit) (treesit-parser-list))
-           (condition-case nil
-               (let ((node (treesit-node-at pos))
-                     (seen-lines (make-hash-table :test 'eql)))
-                 (while node
-                   (let ((type (treesit-node-type node))
-                         (start (treesit-node-start node)))                    
-                     (when (and (< start pos) (member type rules))
-                       (let ((line (- curr-line (count-lines start pos))))
-                         (unless (gethash line seen-lines)
-                           (puthash line t seen-lines)
-                           (push (list :start start :line line) res)))))
-                   (setq node (treesit-node-parent node)))
-                 res)
-             (error nil)))
+          ;; 1. Strategy: Tree-sitter
+          (when (and rules (featurep 'treesit) (treesit-parser-list))
+            (condition-case err
+                (let ((node (treesit-node-at pos))
+                      (seen-lines (make-hash-table :test 'eql))
+                      (max-depth 20)
+                      (depth 0))
+                  (while (and node (< depth max-depth))
+                    (let ((type (treesit-node-type node))
+                          (start (treesit-node-start node)))
+                      (when (and (< start pos) (member type rules))
+                        (let ((line (- curr-line (count-lines start pos))))
+                          (unless (gethash line seen-lines)
+                            (puthash line t seen-lines)
+                            (push (list :start start :line line) res)))))
+                    (setq node (treesit-node-parent node))
+                    (cl-incf depth))
+                  res)
+              ((treesit-query-error treesit-parse-error)
+               (message "Tree-sitter error in context detection: %s" err)
+               nil)))
 
          ;; 2. Strategy: Indentation
          (save-excursion
@@ -119,10 +122,10 @@
          (let ((count 0))
            (save-excursion
              (goto-char pos)
-             ;; 1. 先移动到当前位置所属的标题行（如果当前就在标题上，则不动）
-             (ignore-errors (outline-back-to-heading t))
-             
-             ;; 2. 循环向上寻找父级标题
+              ;; 1. First move to the heading line that the current position belongs to (if already on a heading, stay put)
+              (ignore-errors (outline-back-to-heading t))
+
+              ;; 2. Loop upward to find parent headings
              (while (and (< count head-context-sticky-max-lines)
                          (ignore-errors (outline-up-heading 1 t)))
                (let ((start (point)))
@@ -161,7 +164,7 @@
     map))
 
 (defun head-context-sticky--scroll-parent (event)
-  "将滚轮事件转发给父窗口。"
+  "Forward wheel events to parent window."
   (interactive "e")
   (let* ((window (posn-window (event-start event)))
          (frame (window-frame window))
@@ -176,7 +179,7 @@
   (interactive "e")
   (let* ((posn (event-start event))
          (window (posn-window posn))
-         (point (posn-point posn)) ; 获取点击处的 Buffer 位置
+          (point (posn-point posn)) ; Get the buffer position at click location
          (line (when (and window point)
                  (with-current-buffer (window-buffer window)
                    (get-text-property point 'src-line-number)))))
@@ -185,7 +188,8 @@
              (parent-window (frame-parameter child-frame 'head-sticky-parent)))
         (when (window-live-p parent-window)
           (select-window parent-window)
-          (goto-line line)
+           (goto-char (point-min))
+           (forward-line (1- line))
           (recenter 5)
           (pulse-momentary-highlight-one-line (point)))))))
 
@@ -204,14 +208,14 @@
       (remhash window head-context-sticky--registry) nil)))
 
 ;; -----------------------------------------------------------------------------
-;; 2. 渲染优化：全局 Buffer 复用
+;; 2. Rendering Optimization: Global Buffer Reuse
 ;; -----------------------------------------------------------------------------
 
 (defun head-context-sticky--get-or-create-buffer (window)
-  "为特定窗口获取或创建一个唯一的渲染 Buffer。"
-  (let ((sbuf (format " *head-sticky-render-%x*" (sxhash window))))
-    (or (get-buffer sbuf)
-        (let ((buf (get-buffer-create sbuf)))
+  "Get or create a unique render buffer for WINDOW."
+  (let ((sticky-buffer (format " *head-sticky-render-%x*" (sxhash window))))
+    (or (get-buffer sticky-buffer)
+        (let ((buf (get-buffer-create sticky-buffer)))
           (with-current-buffer buf
             (setq mode-line-format nil 
                   header-line-format nil
@@ -220,24 +224,24 @@
 
 (defun head-context-sticky--cleanup-window (window)
   "Destroy frame and sticky-buffer related to WINDOW"
-  (let* ((stick (head-context-sticky--get-frame window))
-         (frame (car stick))
-         (sbuf (cdr stick)))
+  (let* ((sticky-frame-info (head-context-sticky--get-frame window))
+          (frame (car sticky-frame-info))
+          (sticky-buffer (cdr sticky-frame-info)))
     (set-window-parameter window 'head-sticky-last-content nil)
     (when (frame-live-p frame) (delete-frame frame))
-    (when (get-buffer (or sbuf "")) (kill-buffer sbuf))
+    (when (get-buffer (or sticky-buffer "")) (kill-buffer sticky-buffer))
     (remhash window head-context-sticky--registry)))
 
 (defun head-context-sticky--gc (&optional _)
   "Cleanup dead frames and invalid registry entries."
-  (maphash (lambda (win s)
-             (let ((frame (car s)) (sbuf (cdr s)))
-               (unless
-                   (and (window-live-p win)
-                        (frame-live-p frame)
-                        (frame-visible-p (window-frame win)))
-                 (when (frame-live-p frame) (delete-frame frame))
-                 (when (get-buffer sbuf) (kill-buffer sbuf))
+   (maphash (lambda (win s)
+              (let ((frame (car s)) (sticky-buffer (cdr s)))
+                (unless
+                    (and (window-live-p win)
+                         (frame-live-p frame)
+                         (frame-visible-p (window-frame win)))
+                  (when (frame-live-p frame) (delete-frame frame))
+                  (when (get-buffer sticky-buffer) (kill-buffer sticky-buffer))
                  (remhash win head-context-sticky--registry))))
            head-context-sticky--registry))
 
@@ -266,28 +270,32 @@
 (add-hook 'enable-theme-functions #'head-context-sticky--reset-bg-cache)
 
 (defun head-context-sticky--update-window (window)
+  "Update sticky context display for WINDOW."
   (when (and (display-graphic-p)
              (window-live-p window)
              (not (window-minibuffer-p window))
              (frame-visible-p (window-frame window)))
-    
+
     (let* ((buffer (window-buffer window))
-           (stick (head-context-sticky--get-frame window))
-           (frame (car stick))
-           (sbuf (or (cdr stick) (head-context-sticky--get-or-create-buffer window))))
-      
+           (sticky-frame-info (head-context-sticky--get-frame window))
+           (frame (car sticky-frame-info))
+           (sticky-buffer (or (cdr sticky-frame-info) (head-context-sticky--get-or-create-buffer window))))
+
       (if (or (not (buffer-local-value 'head-context-sticky-mode buffer))
               (memq (buffer-local-value 'major-mode buffer) head-context-sticky-excluded-modes)
               head-context-sticky-invisible)
-          (and (frame-live-p frame) (make-frame-invisible frame))    
+          (when (frame-live-p frame)
+            (make-frame-invisible frame))
+
         (let* ((data (seq-take (head-context-sticky--get-context-data window)
                                head-context-sticky-max-lines))
-               (new-fp (mapcar (lambda (item) (plist-get item :start)) data))
-               (old-fp (window-parameter window 'head-sticky-last-content)))
+               (window-min-height 0)
+               (new-fingerprint (mapcar (lambda (item) (plist-get item :start)) data))
+               (old-fingerprint (window-parameter window 'head-sticky-last-content)))
 
-          ;; 1. 确保 Frame 存在
+          ;; Ensure frame exists
           (unless frame
-            (let ((bg (head-context-sticky--get-bg-color)))
+            (let* ((bg (head-context-sticky--get-bg-color)))
               (setq frame (make-frame `((parent-frame . ,(window-frame window))
                                         (minibuffer . nil)
                                         (undecorated . t)
@@ -307,73 +315,66 @@
                                         (horizontal-scroll-bars . nil)
                                         (background-color . ,bg)
                                         (head-sticky-parent . ,window))))
-              (puthash window (cons frame sbuf) head-context-sticky--registry)))
+              (puthash window (cons frame sticky-buffer) head-context-sticky--registry)))
 
-          ;; 2. 计算几何位置
+          ;; Render content if fingerprint changed
+          (unless (equal new-fingerprint old-fingerprint)
+            (set-window-parameter window 'head-sticky-last-content new-fingerprint)
+            (with-current-buffer sticky-buffer
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (head-context-sticky--render-to-buffer buffer data (nth 2 (window-inside-pixel-edges window)))
+                (let ((root (frame-root-window frame)))
+                  (unless (eq (window-buffer root) sticky-buffer)
+                    (set-window-buffer root sticky-buffer))
+                  (set-window-fringes root 0 0))))
+            (set-frame-size frame (nth 2 (window-inside-pixel-edges window)) (* (length data) (frame-char-height frame)) t))
+
+          ;; Position and visibility
           (let* ((edges (window-inside-pixel-edges window))
                  (tab-h (window-tab-line-height window))
                  (head-h (window-header-line-height window))
-                 (text-x (nth 0 edges)) 
-                 (text-y (+ (nth 1 edges) tab-h head-h))
-                 (text-w (- (nth 2 edges) text-x))
-                 (line-h (frame-char-height frame))
-                 (lnc (length data))
-                 (target-h (* lnc line-h))
-                 (window-min-height 0))
-            ;; 3. 指纹对比，决定是否渲染
-            (unless (equal new-fp old-fp)
-              (set-window-parameter window 'head-sticky-last-content new-fp)
-              (with-current-buffer sbuf
-                (let ((inhibit-read-only t))
-                  (erase-buffer)
-                  (head-context-sticky--render-to-buffer buffer data text-w)
-                  ;; 这里直接复用 buffer，避免重复 set-window-buffer
-                  (let ((root (frame-root-window frame)))
-                    (unless (eq (window-buffer root) sbuf)
-                      (set-window-buffer root sbuf))
-                    (set-window-fringes root 0 0))))
-              (set-frame-size frame text-w target-h t))
-
-
-            ;; 4. 同步坐标并显示 (防闪烁：仅在坐标变化时移动)
+                 (text-x (nth 0 edges))
+                 (text-y (+ (nth 1 edges) tab-h head-h)))
             (let ((curr-x (frame-parameter frame 'left))
                   (curr-y (frame-parameter frame 'top)))
               (unless (and (eql curr-x text-x) (eql curr-y text-y))
                 (set-frame-position frame text-x text-y)))
-            
-            (if (= 0 lnc)
+
+            (if (= 0 (length data))
                 (make-frame-invisible frame)
-              (or (frame-visible-p frame) (make-frame-visible frame))
+              (unless (frame-visible-p frame)
+                (make-frame-visible frame))
               (raise-frame frame))))))))
 
 ;; -----------------------------------------------------------------------------
-;; 4. 性能优化点总结
+;; 4. Performance Optimization Summary
 ;; -----------------------------------------------------------------------------
 
-;; A. 搜索优化：限制 Tree-sitter 向上回溯的层数 (防止在大文件中假死)
-;; 在 head-context-sticky--get-context-data 中增加计数限制：
-;; (while (and node (< count 20)) ...) 
+;; A. Search optimization: limit Tree-sitter upward traversal depth (prevents freezing in large files)
+;; Add count limit in head-context-sticky--get-context-data:
+;; (while (and node (< count 20)) ...)
 
-;; B. 渲染优化：利用 font-lock-ensure 的范围限制
+;; B. Rendering optimization: use font-lock-ensure range limitation
 (defun head-context-sticky--render-to-buffer (src-buf data text-w)
-  "辅助函数：将上下文数据渲染到目标 Buffer。"
+  "Helper function to render context data to target buffer."
   (let* ((char-w (frame-char-width))
-         (active-ln (buffer-local-value 'display-line-numbers-mode src-buf))
-         (ln-width (if (and head-context-sticky-show-line-numbers active-ln)
+          (line-numbers-active (buffer-local-value 'display-line-numbers-mode src-buf))
+          (line-number-width (if (and head-context-sticky-show-line-numbers line-numbers-active)
                        (with-current-buffer src-buf (line-number-display-width)) 
                      0))
-         (max-chars (max 10 (- (/ text-w char-w) ln-width 2))))
-    
+          (max-chars (max 10 (- (/ text-w char-w) line-number-width 2))))
+
     (dolist (item data)
       (let* ((start (plist-get item :start))
-             (line-num (plist-get item :line))
-             (content (with-current-buffer src-buf
-                        (save-excursion
-                          (goto-char start)
-                          ;; 性能优化：只确保当前行的 font-lock
-                          (font-lock-ensure (line-beginning-position) (line-end-position))
-                          (buffer-substring (line-beginning-position) (line-end-position)))))
-             (num-str (if (> ln-width 0) (format (format " %%%dd " ln-width) line-num) "")))
+              (line-num (plist-get item :line))
+              (content (with-current-buffer src-buf
+                         (save-excursion
+                           (goto-char start)
+                           ;; Performance optimization: ensure font-lock only for current line
+                           (font-lock-ensure (line-beginning-position) (line-end-position))
+                           (buffer-substring (line-beginning-position) (line-end-position)))))
+              (num-str (if (> line-number-width 0) (format (format " %%%dd " line-number-width) line-num) "")))
         (insert (propertize num-str 'face 'head-context-sticky-number-face)
                 (propertize (truncate-string-to-width content (round max-chars) 0 nil "..")
                             'src-line-number line-num 
@@ -382,23 +383,29 @@
                 "\n")))
     (when (> (buffer-size) 0) (delete-char -1))))
 
-(defun head-context-sticky--update-all (&optional v)
+(defun head-context-sticky--update-all (&optional _v)
+  "Update all visible windows with sticky context."
   (head-context-sticky--gc)
-  (walk-window-tree #'head-context-sticky--update-window))
+  (walk-window-tree
+   (lambda (window)
+     (when (and (window-live-p window)
+                (frame-visible-p (window-frame window))
+                (not (window-minibuffer-p window)))
+       (head-context-sticky--update-window window)))))
 ;; -----------------------------------------------------------------------------
-;; 优化：调度逻辑 (使用 Idle Timer)
+;; Optimization: Scheduling Logic (using Idle Timer)
 ;; -----------------------------------------------------------------------------
 
 (defvar head-context-sticky--timer nil)
 (defun head-context-sticky--schedule-update ()
-  "PERF: 使用 Idle Timer 避免在输入时频繁触发计算。"
-  (when head-context-sticky--timer (cancel-timer head-context-sticky--timer))
+  "Use idle timer to avoid frequent updates during typing."
+  (when head-context-sticky--timer
+    (cancel-timer head-context-sticky--timer))
   (setq head-context-sticky--timer
-        (run-with-idle-timer
-         0.05 nil 
-         (lambda ()
-           (when (window-live-p (selected-window))
-             (head-context-sticky--update-window (selected-window)))))))
+        (run-with-idle-timer 0.05 nil
+                             (lambda ()
+                               (when (window-live-p (selected-window))
+                                 (head-context-sticky--update-window (selected-window)))))))
 
 ;; -----------------------------------------------------------------------------
 ;; 6. Lifecycle
@@ -422,10 +429,10 @@
     
     (remove-hook 'post-command-hook #'head-context-sticky--schedule-update t)
     (maphash (lambda (w s)
-               (let ((frame (car s)) (sbuf (cdr s)))
-                 (set-window-parameter w 'head-sticky-last-content nil)
-                 (when (frame-live-p frame) (delete-frame frame))
-                 (when (get-buffer (or sbuf "")) (kill-buffer sbuf))))
+                (let ((frame (car s)) (sticky-buffer (cdr s)))
+                  (set-window-parameter w 'head-sticky-last-content nil)
+                  (when (frame-live-p frame) (delete-frame frame))
+                  (when (get-buffer (or sticky-buffer "")) (kill-buffer sticky-buffer))))
              head-context-sticky--registry)
     (clrhash head-context-sticky--registry)))
 
